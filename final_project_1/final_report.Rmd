@@ -1,0 +1,785 @@
+---
+title: "\vspace{5cm} New York Airbnb Smart Pricing \vspace{1cm}"
+author: "Kexin Huang, Jay Rong, Jenny Wang, Jerri Zhang \vspace{1cm}"
+date: "December 15, 2019"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    code_folding: hide
+    toc: yes
+---
+
+
+```{r include=FALSE}
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(shiny)
+library(knitr)
+
+# Word cloud
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+
+# Google map visualization
+library(devtools)
+library(ggmap)
+
+# Multiple linear regression
+library(splines2)
+library(broom)
+
+# Random forest
+library(rsample)      
+library(caret)       
+library(caTools)
+library(ranger)
+
+# Gradient boosting machine
+library(gbm)
+
+# LIME
+library(lime)
+```
+
+```{r, include=FALSE}
+# Set seed for reproducibility
+set.seed(260)
+
+# Load data
+data = read.csv("new-york-city-airbnb-open-data/AB_NYC_2019.csv", stringsAsFactors=T)
+```
+
+# Overview
+
+## Background and Motivation
+
+New York City is a diverse place with high costs of living. In 2018, NYC welcomed 65.2 million visitors worldwide. With such a large number of people coming in and out of the city, Airbnb presents itself as a viable opportunity for property owners. We aim to estimate the optimal price for listings as an approach to help owners make the most profit out of their homes. Additionally, finding available and desirable accommodations within a reasonable budget is oftentimes a pain to many when planning for travels. We wish to make this process easier for tourists by finding Airbnb listings they want within their respective available budgets. With these motivations in mind, we hope to drive satisfaction in both property owners and their customers by incorporating various exploratory data analysis and machine learning techniques to this booming industry.
+
+## Related Works
+
+The [New York housing crisis](https://www1.nyc.gov/site/housing/problem/problem.page) remains prevalent, and many New Yorkers struggle to find or upkeep affordable housing. Leasing properties as Airbnbs is one way for them to generate revenue.
+
+## Objectives
+
+We aim to answer the following questions:
+
+1. What is the traffic distribution across neighborhoods and why?
+
+2. Given the features of a listing, what is an ideal price for it?
+
+We plan to conduct the following analysis:
+
+- **Visualization**. Use various graphing techniques to understand the distribution and characteristics of each variable, as well as create a geological plot on a real map to study the traffic distribution. 
+
+
+- **Prediction**. Use classic methods, such as linear regression, random forest, gradient boosting to accurately predict the price of listings.
+
+The benefit of this project is that it is a well-rounded real-world business problem that is extendable to many other questions such as Yelp review predictions. It goes through various facets of data science from exploratory data analysis to predictive modeling. We here build a framework to study each of these questions in detail.
+
+## Data Source
+
+The dataset "New York City Airbnb Open Data" contains Airbnb listings in New York city with 16 covariates and 48,895 observations. Each row represents a single Airbnb listing, and each column contains a feature of the listing.
+
+- Source: [Kaggle](https://www.kaggle.com/dgomonov/new-york-city-airbnb-open-data)
+
+
+# Exploratory Data Analysis 
+
+## Data Samples
+
+```{r warning=FALSE, message=FALSE}
+# Look at the dataset
+knitr::kable(head(data,n=5))
+sapply(data, class)
+```
+
+## Word Cloud Using Listing Names
+
+We can calculate the frequency of words and create a word cloud to visualize what words are regularly mentioned in the listings. 
+
+```{r  warning=FALSE, message=FALSE}
+modi<-Corpus(VectorSource(data$name))
+modi_data<-tm_map(modi,stripWhitespace)
+
+modi_data<-tm_map(modi_data,tolower)
+
+modi_data<-tm_map(modi_data,removeNumbers)
+
+modi_data<-tm_map(modi_data,removePunctuation)
+
+tdm_modi<-TermDocumentMatrix(modi_data)
+TDM1<-as.matrix(tdm_modi)
+v = sort(rowSums(TDM1), decreasing = TRUE)
+
+wc <- wordcloud(modi_data, scale=c(5,0.5), max.words=100, random.order=FALSE, rot.per=0.35, use.r.layout=FALSE, colors=brewer.pal(8, "Dark2"))
+
+```
+
+We see all these beautiful bragging words.
+
+## Google Map Visualization
+
+```{r warning=FALSE, message=FALSE}
+devtools::install_github("dkahle/ggmap")
+register_google(key="AIzaSyDCEiYC7LHLq3h7BtpMCXNDgUMtBvveUgg")
+```
+
+```{r warning=FALSE, message=FALSE}
+#fig.width=4,fig.height=4
+nyc = get_map(location = "new york", source = "google", maptype = "terrain", zoom = 11)
+map = ggmap(nyc)
+
+map + 
+  stat_density2d( data = data, aes(x = longitude, y = latitude, fill = ..level.., alpha = ..level..), size = 1, bins = 50, geom = 'polygon') +
+  scale_fill_gradient('Density', low = 'blue', high = 'orange') +
+  scale_alpha(range = c(.2, .3), guide = FALSE) +
+  guides(fill = guide_colorbar(barwidth = 1.5, barheight = 10)) +
+  labs(title = "Distribution of Airbnb in New York City")
+```
+
+We can see that most Airbnbs are located in Manhattan and Brooklyn.	
+
+## Variables
+
+The outcome variable we are interested in is `price`. We plot the distribution of `price` and see that the density of price is highly skewed to the right. This is likely because of the presence of some outliers with appreciably high values. After applying a log transformation, the density of `price` follows a normal distribution.
+
+```{r warning=FALSE, message=FALSE, fig.height = 4, fig.width = 10}
+p1 = ggplot(data, aes(price)) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Price") + theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+p2 = ggplot(data, aes(log(price))) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Price with Log Transformation") + theme(axis.line.x = element_line(size = 0.4, colour = "black"),
+              axis.line.y = element_line(size = 0.4, colour = "black"), 
+              panel.background = element_blank())
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+We did not include `id`, `name`, `host_id`, `host_name` as predictors in our analysis because they do not carry much information with respect to `price`. The covariate `neighborhood` was dropped because it has too many levels as a factor and makes model interpretation difficult. Additionally, `last_review` was not included because it is the date of the last review and does not intuitively count for `price`. 
+
+Here are the predictors we are interested in: 
+
+- `neighbourhood_group`
+
+- `room_type`
+
+- `minimum_nights`
+
+- `number_of_reviews`
+
+- `reviews_per_month`
+
+- `calculated_host_listings_count`
+
+- `availability_365`
+
+
+Below are the distributions of `room_type` and `neighbourhood_group`. We plot the boxplots against log-transformed `price` and see that the levels are approximately normally distributed.
+
+```{r warning=FALSE, message=FALSE, fig.height = 4, fig.width = 6}
+#room_type
+ggplot(data, aes(x=room_type, y = log(price), color = room_type, fill=room_type)) + geom_boxplot( alpha = 0.2) + ggtitle("Distribution of Room Types") + theme(axis.line.x = element_line(size = 0.4, colour = "black"),
+              axis.line.y = element_line(size = 0.4, colour = "black"), 
+              panel.background = element_blank())
+#knitr::kable(table(data$room_type))
+knitr::kable(data %>% group_by(room_type) %>% summarise(ave_price_room_type = mean(price)))
+```
+
+On average, Entire home/apt are the most expansive ones with average price of $212 per night. Private room and shared room are much more cheaper.
+
+
+```{r warning=FALSE, message=FALSE, fig.height = 4, fig.width = 10}
+#neighbourhood_group
+ggplot(data, aes(x=neighbourhood_group, y = log(price), color = neighbourhood_group, fill=neighbourhood_group)) + geom_boxplot( alpha = 0.2) + ggtitle("Distribution of Neighbourhood Groups") + theme(axis.line.x = element_line(size = 0.4, colour = "black"),
+              axis.line.y = element_line(size = 0.4, colour = "black"), 
+              panel.background = element_blank())
+# table(data$neighbourhood_group)
+knitr::kable(data %>% group_by(neighbourhood_group) %>% summarise(ave_price_neighbourhood_group = mean(price)))
+
+```
+
+On Average, listings in Manhattan are the most expansive ones. Bronx and Staten Island are more economically friendly.
+
+
+We also plot the distributions of the continuous variables we plan to include in the model.
+
+```{r warning=FALSE, message=FALSE, fig.height = 4, fig.width = 10}
+# minimum_nights
+p1 = ggplot(data, aes(minimum_nights)) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Minimum Nights") + theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+p2 = ggplot(data, aes(log(minimum_nights))) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Minimum Nights with Log Transformation") + theme(axis.line.x = element_line(size = 0.4, colour = "black"),
+              axis.line.y = element_line(size = 0.4, colour = "black"), 
+              panel.background = element_blank())
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+```{r warning=FALSE, message=FALSE, fig.height = 4, fig.width = 10}
+#number_of_reviews
+p1 = ggplot(data, aes(number_of_reviews)) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Number of Reviews") + theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+p2 = ggplot(data, aes(log(number_of_reviews))) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Number of Reviews with Log Transformation") + theme(axis.line.x = element_line(size = 0.4, colour = "black"),
+              axis.line.y = element_line(size = 0.4, colour = "black"), 
+              panel.background = element_blank())
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+```{r warning=FALSE, message=FALSE, fig.height = 4, fig.width = 10}
+# reviews_per_month
+p1 = ggplot(data, aes(reviews_per_month)) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Reviews per Month") + theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+p2 = ggplot(data, aes(log(reviews_per_month))) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Reviews per Month with Log Transformation") + theme(axis.line.x = element_line(size = 0.4, colour = "black"),
+              axis.line.y = element_line(size = 0.4, colour = "black"), 
+              panel.background = element_blank())
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+```{r warning=FALSE, message=FALSE, fig.height = 4, fig.width = 10}
+# calculated_host_listings_count
+p1 = ggplot(data, aes(calculated_host_listings_count)) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Host Listings Count") + theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+p2 = ggplot(data, aes(log(calculated_host_listings_count))) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Host Listings Count with Log Transformation") + theme(axis.line.x = element_line(size = 0.4, colour = "black"),
+              axis.line.y = element_line(size = 0.4, colour = "black"), 
+              panel.background = element_blank())
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+```{r warning=FALSE, message=FALSE, fig.height = 4, fig.width = 5}
+#availability_365
+p1 = ggplot(data, aes(availability_365)) + geom_density(alpha = 0.2, fill="#00BFC4") + ggtitle("Distribution of Availabilities in A Year") + theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+p1
+
+```
+
+We see that `minimum_nights`, `number_of_reviews`, and `reviews_per_month` approximately follow a normal distribution after applying log transformation. However, `calculated_host_listings_count` and `availability_365` do not follow clear patterns in their distributions.
+
+
+# Modeling and Prediction
+
+#### Metrics
+
+We use \(R^{2}\) and mean squared error (MSE) to measure the correlation between the predicted log-price and the real log-price. Both metrics are important to consider when assessing model accuracy. A high \(R^{2}\) value indicates larger correlation, and a low MSE indicates smaller error. Together, these reflect better predicive performance.
+
+#### Data Splits
+
+We apply 8:2 training:testing splits to our dataset. With the training sets, we further hold out 20% to use as validation sets to tune model parameters. We then report the final \(R^{2}\) result on the test set.
+
+## Linear Regression
+
+**Motivation**
+
+![Linear regression. Courtesy: statisticsfun](figures/lm.jpg)
+
+Linear regression is a popular and powerful tool that comes up often in statistical analyses. We use regression for two main reasons:
+
+1. To model or predict the values of an outcome of interest
+
+2. To explore and quantify the relationship between an exposure(s) and an outcome
+
+Our analysis dives into forward variable selection, model building and the use of splines, and evaluation of assumptions.
+
+**Forward Variable Selection**
+
+```{r, results="hide",message=FALSE, warning=FALSE}
+# Clean the dataset for linear regression
+data_lm <- data %>%
+  # Convert NAs in reviews_per_month to zero
+  mutate(reviews_per_month=ifelse(is.na(reviews_per_month), 0, reviews_per_month)) %>%
+  # Log-transform the outcome (price)
+  mutate(price_log=log1p(price)) %>%
+  # Select the variables we need
+  select(neighbourhood_group, room_type, minimum_nights, number_of_reviews, reviews_per_month, calculated_host_listings_count, availability_365, price_log)
+
+# Perform forward selection
+mod_forward <- step(lm(price_log ~ 1, # This is the intercept model
+                       data=data_lm),
+                       ~ neighbourhood_group + room_type + minimum_nights + number_of_reviews + reviews_per_month + calculated_host_listings_count + availability_365, direction="forward")
+
+formula(mod_forward) # Outputs the covariates to include in the final model
+```
+
+Now, we build the linear regression model. We first start by running forward selection on all the variables we include. Forward selection starts with the simplest intercept model and adds covariates one at a time if said covariate has a coefficient estimate that is statistically significant at a certain threshold (here we choose _p_ < 0.05). This process is performed until convergence. In the end, we can choose the model with the lowest Akaike's information criterion (AIC), which would give the model with lowest prediction error.
+
+Our forward selection included all the covariates except for `calculated_host_listings_count` in the model with AIC = -66,495.97. We included these variables in our final linear regression model.
+
+**Splines**
+
+In addition to including all the covariates we looked at from forward model selection, we consider using a piecewise cubic spline to improve model prediction accuracy. Cubic splines are continuous functions formed by connecting 3rd-order segments of the covariates. The points where the segments connect are called the knots of the spline. Splines make the fit smoother and in turn reduces errors in prediction.
+
+First, we determine the knots by making scatterplots between the outcome and each continuous covariate:
+
+```{r, message=FALSE, WARNING=FALSE}
+p1_lm <- data_lm %>%
+  ggplot(aes(x=minimum_nights, y=price_log)) +
+  geom_point() +
+  xlab("Minimum nights") +
+  ylab("Log price") +
+  theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+
+p2_lm <- data_lm %>%
+  ggplot(aes(x=number_of_reviews, y=price_log)) +
+  geom_point() +
+  xlab("Number of reviews") +
+  ylab("Log price") +
+  theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+
+p3_lm <- data_lm %>%
+  ggplot(aes(x=reviews_per_month, y=price_log)) +
+  geom_point() +
+  xlab("Reviews per month") +
+  ylab("Log price") +
+  theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+
+grid.arrange(p1_lm, p2_lm, p3_lm, nrow=1)
+```
+
+From the scatterplots, we determine the knot points to be 100, 50, and 10 for `minimum_nights`, `number_of_reviews`, and `reviews_per_month`, respectively.
+
+**Modeling**
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(260)
+split_lm <- initial_split(data_lm, prop=0.8)
+train_lm <- training(split_lm)
+test_lm <- testing(split_lm)
+
+# Split the training set further into training and validation sets
+split_lm <- initial_split(train_lm, prop=0.9)
+train_lm <- training(split_lm)
+val_lm <- testing(split_lm)
+
+# Multiple linear regression with piecewise cubic splines
+## Training set
+fit_lm <- lm(price_log ~ room_type + neighbourhood_group + minimum_nights + I(minimum_nights^2) + bSpline(minimum_nights, knots=100) + number_of_reviews + I(number_of_reviews^2) + bSpline(number_of_reviews, knots=50) + reviews_per_month + I(reviews_per_month^2) + bSpline(reviews_per_month, knots=10), data=train_lm)
+# summary(fit_lm)
+# tidy(fit_lm)
+
+## Validation set
+val_lm_fitted <- predict(fit_lm, val_lm)
+val_lm_results <- val_lm %>%
+  mutate(val_lm_fitted=val_lm_fitted) %>%
+  select(price_log, val_lm_fitted)
+
+### RMSE for original price
+# sqrt(mean((expm1(val_lm$price_log) - expm1(val_lm_fitted))^2))
+### RSQ for original price
+# cor(expm1(val_lm_fitted), expm1(val_lm$price_log))^2
+### RMSE for log1p price
+# sqrt(mean((val_lm$price_log - val_lm_fitted)^2))
+### RSQ for log1p price
+# cor(val_lm_fitted, val_lm$price_log)^2
+
+## Test set
+test_lm_fitted <- predict(fit_lm, test_lm)
+test_lm_results <- test_lm %>%
+  mutate(test_lm_fitted=test_lm_fitted) %>%
+  select(price_log, test_lm_fitted)
+
+## Run on entire dataset
+fit_lm_all <- lm(price_log ~ room_type + neighbourhood_group + minimum_nights + I(minimum_nights^2) + bSpline(minimum_nights, knots=100) + number_of_reviews + I(number_of_reviews^2) + bSpline(number_of_reviews, knots=50) + reviews_per_month + I(reviews_per_month^2) + bSpline(reviews_per_month, knots=10), data=data_lm)
+# summary(fit_lm_all)
+tidy(fit_lm_all)
+```
+
+The linear regression model gives us an adjusted \(R^{2}\) value of 0.462 for the test set, meaning that approximately 46.2% of the variability in our data is explained by the model. For multiple linear regression, this is a high score.
+
+**Assumptions for Linear Regression**
+
+To evaluate whether or not we should run a linear regression model on our dataset, we need to make sure that the linear model assumptions hold, namely:
+
+* **L**: linearity
+
+* **I**: independence
+
+* **N**: normality
+
+* **E**: equal variance
+
+The LINE assumption states that in order to fit a linear model, the mean of _Y_ must be linearly associated with the predictors, the observations must be independent, the distribution of _Y_ is normally distributed around its mean, and the variability of Y about its mean value is equal for all x values (assumption of homoscedasticity).
+
+We test the assumptions for linear regression by looking at the residuals of the model.
+
+To test for linearity and homoscedasticity, we plot the model residuals against the covariates:
+
+```{r, message=FALSE, warning=FALSE}
+resid <- data_lm %>%
+  mutate(residuals=fit_lm_all$residuals) %>%
+  select(minimum_nights, number_of_reviews, reviews_per_month, residuals)
+
+p4_lm <- resid %>%
+  ggplot(aes(x=minimum_nights, y=residuals)) +
+  geom_point() +
+  xlab("Minimum nights") +
+  ylab("Residuals") +
+  theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+
+p5_lm <- resid %>%
+  ggplot(aes(x=number_of_reviews, y=residuals)) +
+  geom_point() +
+  xlab("Number of reviews") +
+  ylab("Residuals") +
+  theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+
+p6_lm <- resid %>%
+  ggplot(aes(x=reviews_per_month, y=residuals)) +
+  geom_point() +
+  xlab("Reviews per month") +
+  ylab("Residuals") +
+  theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+
+grid.arrange(p4_lm, p5_lm, p6_lm, nrow=1)
+```
+
+We see that the residuals are not evenly scattered across zero, indicating the possibility of heteroscedasticity within the data, as well as a violation of the linearity assumption. We do have high-leverage observations in the predictor variables, which could skew the results. However, we should still consider running other models to improve fit.
+
+To test for normality, we plot a histogram and a QQ-plot of the model residuals:
+```{r, message=FALSE, warning=FALSE}
+resid %>%
+  ggplot(aes(sample=residuals)) +
+  stat_qq() +
+  xlab("Theoretical quantiles") +
+  ylab("Residuals of log price") +
+  theme(axis.line.x = element_line(size = 0.5, colour = "black"),
+              axis.line.y = element_line(size = 0.5, colour = "black"), 
+              panel.background = element_blank())
+```
+
+From the QQ-plot, we see that the residuals are not exactly normally distributed.
+
+From this analysis, we see that some assumptions for linear regression are violated. We therefore consider other predictive models: the random forest, the gradient boosting machine.
+  
+## Random Forest
+
+![Random Forest Method Illustration. Courtesy: Toad World Blog](figures/rf.png)
+
+Random forest (RF) uses bagging to create random subsets of training data. For each subset, it then builds a decision tree and the result is aggregated. We use the [ranger](https://cran.r-project.org/web/packages/ranger/index.html) package to build our model. We test using [100, 200, 300, 400, 500, 600, 700, 800] as number of trees and find that 700 has the best performance. Using this setup, we obtain an \(R^{2}\) of 0.535 on the test set, which is a very high score. 
+  
+```{r message=FALSE}
+data$price_log <- log1p(data$price)
+
+data_use <- data[c("neighbourhood_group", "room_type", "minimum_nights", "number_of_reviews", "reviews_per_month", "calculated_host_listings_count", "availability_365", "price_log")]
+
+## missing values imputation
+data_use$reviews_per_month[which(is.na(data_use$reviews_per_month))] <- as.numeric(0.0)
+
+# splitting dataset
+set.seed(260)
+split <- initial_split(data_use, prop = .8)
+train <- training(split)
+test <- testing(split)
+
+split <- initial_split(train, prop = .9)
+train <- training(split)
+val <- testing(split)
+
+val_x <- val[setdiff(names(val), "price_log")]
+val_y <- val$price_log
+
+i_ranger <- ranger(
+  formula = price_log ~ .,
+  data = train,
+  num.trees = 700,
+  importance = 'impurity'
+)
+
+#pred_test <- predict(i_ranger, test)$predictions
+#print("MSE for log1p price")
+#sqrt(mean((test$price_log - pred_test)^2))
+#print("R-Squared for log1p price")
+#cor(pred_test, test$price_log)^2
+```
+
+We also visualize variable importance of the prediction:
+
+```{r message=FALSE}
+dat <- data.frame(Variable = names(i_ranger$variable.importance), 
+                  Punity = as.vector(i_ranger$variable.importance))
+
+ggplot(dat, aes(x=Variable, weight=Punity)) + geom_bar() + coord_flip() + ylab('Punity')
+```
+
+This result makes sense as we know that `room_type` should be a major factor in deciding the price. The second most important factor, `neighbourhood_group`, also makes sense, as Manhattan is generally more expensive.
+
+## Gradient Boosting Machine
+
+![GBM Method Illustration. Courtesy: https://medium.com/all-things-ai/in-depth-parameter-tuning-for-gradient-boosting-3363992e9bae](figures/gbm.png)
+
+Gradient boosting machine (GBM) is similar to RF, but instead of randomly generating decision trees, it builds successive new trees based on the performance of previous trees. We use the package [gbm](https://www.rdocumentation.org/packages/gbm/versions/2.1.5/topics/gbm) to build our model.
+
+```{r message=FALSE}
+gbm.fit <- gbm(
+  formula = price_log ~ .,
+  distribution = "gaussian",
+  data = train,
+  n.trees = 5000,
+  interaction.depth = 1,
+  shrinkage = 0.001,
+  verbose = FALSE
+  )  
+
+pred_test <- predict(gbm.fit, n.trees = gbm.fit$n.trees, test)
+
+#print("MSE for log1p price")
+#sqrt(mean((test$price_log - pred_test)^2))
+#print("R-Squared for log1p price")
+#cor(pred_test, test$price_log)^2
+
+```
+
+We see that GBM also achieves very good performance with an \(R^{2}\) of 0.517 on the test set, similar to RF (RF has higher \(R^{2}\) but also higher MSE). We can also visualize variable importance from the GBM using the `vip` package:
+
+```{r message=FALSE}
+vip::vip(gbm.fit)
+```
+
+We see that the GBM also identifies `room_type` and `neighbourhood_group` as the major factors predicting `price`. This corroborates with real-world expectations. 
+
+## LIME
+
+We also experiment on the LIME explainability toolkit. LIME is a model-agnostic local explanation method that examines how the perturbation of input variables in a specific case can change the outcome. 
+
+```{r message=FALSE}
+model_type.gbm <- function(x, ...) {
+ return("regression")
+}
+
+predict_model.gbm <- function(x, newdata, ...) {
+  pred <- predict(x, newdata, n.trees = x$n.trees)
+  return(as.data.frame(pred))
+}
+
+local_obs <- train[1, ]
+
+# apply LIME
+explainer <- lime(train, gbm.fit)
+explanation <- explain(local_obs, explainer, n_features = 7)
+plot_features(explanation)
+```
+
+For example, for this listing, we see that private room is a deciding factor to make lower the price (negative). It is located in Brooklyn, which also has a negative effect on the outcome. Additionally, this listing has high availablity throughout the year and makes the price a bit higher, although this has very limited effect as we can imagine. 
+
+# Shiny Applications
+
+![Tab 1](figures/shiny_tab1.png)
+
+In the first tab, users can input desired values for several parameters to get a map of where the listings are physically located on a map. The app also returns the nearest listings when user clicks on a location they are interested in.
+
+![Tab 2](figures/shiny_tab2.png)
+
+In the second tab, users can input desired values for several parameters and get a distribution of the price of listings across the 5 boroughs, as well as a price estimate from our predictions.
+
+```{r  warning=FALSE, message=FALSE}
+devtools::install_github("dkahle/ggmap")
+register_google(key="AIzaSyDCEiYC7LHLq3h7BtpMCXNDgUMtBvveUgg")
+
+#loc = c(left = -74.7, bottom = 40.55, right = -73.2, top = 40.9)
+nyc = get_map(location = "new york", source = "google", maptype = "terrain", zoom = 11)
+map = ggmap(nyc)
+
+ui <- fluidPage(
+    titlePanel("Airbnb in New York City"),
+    tabsetPanel(
+        tabPanel("Find What I Want",
+                 fluidRow(
+                     column(3,
+                            # Input
+                            checkboxGroupInput(inputId = "room_type",
+                                        label = "Room Type:",
+                                        choices = as.list(levels(data$room_type)),
+                                        selected=unlist(data$room_type)
+                            ),
+                            
+                            checkboxGroupInput(inputId = "neigh",
+                                        label = "Neighborhood:",
+                                        choices = as.list(levels(data$neighbourhood_group)),
+                                        selected=unlist(data$neighbourhood_group)
+                 
+                            ),
+                            
+                            sliderInput(inputId = "price",
+                                        label = "Price Rnage:",
+                                        min = 0, 
+                                        max = 1000,
+                                        value = c(0,1000), 
+                                        step = 1,
+                                        ticks = FALSE  # don't show tick marks on slider bar
+                            ),
+                            sliderInput(inputId = "min_night",
+                                        label = "Minimum Nights of Stay:",
+                                        min = 0, 
+                                        max = 365,
+                                        value = 3, 
+                                        step = 1,
+                                        ticks = FALSE  # don't show tick marks on slider bar
+                            )
+                     ),
+                     #output
+                     column(9,
+                            plotOutput(outputId = "plot1", height=500,
+                               click = "plot1_click")
+                     ),
+                fluidRow(
+                      column(12,
+                      verbatimTextOutput("click_info")
+                      )
+                )
+                 )),
+                 
+      tabPanel("How Much Should I Pay",    
+             sidebarLayout(
+               sidebarPanel(
+                 p("Through forward model selection via linear regression, we have found 5 contributing factors to NYC Airbnb prices: 
+                   Neighborhood (group), Availability, Min Nights, Host Listing, and Room type.
+                   You can choose Availability, Min Nights, Host Listing, and Room type from below as you like to see how price 
+                   changes under different factors. 
+                   Note that the blue dot is our expected price, and the boxplot shows prices across different
+                   significant neighborhoods in NYC"),
+                 
+                 # Dropdown menu that allows the user to choose a room_type since it is categorical variable
+                 selectInput("room_type", label = "choose a room type", #here room_type is the inputID
+                             choices = data$room_type),
+                 
+                 #slider bar for availability
+                 sliderInput("availability", "Availability throughout the year:", #inputID and label
+                             min=min(data$availability_365), #goes from the min so that the user selection is meaningful
+                             max=max(data$availability_365), #goes up to the max so that the user selection is meaningful
+                             value=median(data$availability_365), # Default is the median
+                             step=1, # Show only integer values
+                             sep="", # keep variable in desired digital format and not 1,960 format i.e. remove commas
+                             ticks=FALSE, # don't show tick marks on slider bar
+                             animate=TRUE), # add play button to animate
+                 
+                 #slider bar for min nights
+                 sliderInput("min_nights", "Minimum Nights:", #inputID and label
+                             min=min(data$minimum_nights), 
+                             max=max(data$minimum_nights), 
+                             value=median(data$minimum_nights), # Default is median
+                             step=1, # Show only integer values
+                             sep="", # remove commas
+                             ticks=FALSE, # don't show tick marks on slider bar
+                             animate=TRUE), # add play button to animate
+                 
+                 #slider bar for host listing
+                 sliderInput("host_listing", "Host Listing:", #inputID and label
+                             min=min(data$calculated_host_listings_count), 
+                             max=max(data$calculated_host_listings_count), 
+                             value=median(data$calculated_host_listings_count), # Default is median
+                             step=1, # Show only integer values
+                             sep="", # remove commas
+                             ticks=FALSE, # don't show tick marks on slider bar
+                             animate=TRUE) # add play button to animate
+                 ),
+               
+               
+               mainPanel(
+                 plotOutput("boxPlot1"), #here we want a boxplot, and boxPlot is outputID
+                 tableOutput('table1'))
+               ))
+           )
+                
+    )     
+
+
+server <- function(input, output) {
+    output$plot1 <- renderPlot({
+        mydata = data %>% filter(room_type == input$room_type) %>% filter(neighbourhood_group == input$neigh) %>% filter(price >= input$price[1] & price <= input$price[2]) %>% filter(minimum_nights >= input$min_night)
+        map + geom_point(data= mydata, aes(x = longitude, y = latitude, colour = room_type), alpha=0.7) + coord_cartesian()
+    })
+    
+    output$click_info <- renderPrint({
+    mydat = data %>% filter(room_type == input$room_type) %>% filter(neighbourhood_group == input$neigh) %>% filter(price >= input$price[1] & price <= input$price[2]) %>% filter(minimum_nights >= input$min_night)
+    c = nearPoints(mydat, input$plot1_click, maxpoints = 5, xvar = "longitude", yvar = "latitude")
+        knitr::kable(c)
+  })
+    
+  
+      output$boxPlot1 = renderPlot({
+    
+    #y1 through y5 is our 5 expected prices for each neighborhood group
+    #please alter coefficients based on regression results
+    #also take care of room type
+    
+    y1 <- 0.2*input$availability+0.2*input$min_nights+0.2*input$host_listing+100
+    y2 <- 0.2*input$availability+0.2*input$min_nights+0.2*input$host_listing+110
+    y3 <- 0.2*input$availability+0.2*input$min_nights+0.2*input$host_listing+120
+    y4 <- 0.2*input$availability+0.2*input$min_nights+0.2*input$host_listing+130
+    y5 <- 0.2*input$availability+0.2*input$min_nights+0.2*input$host_listing+140
+    
+    ggplot(data = data, aes(x=neighbourhood_group, y=price)) + geom_boxplot() +
+      #boxplot(price~neighbourhood_group, data=below_median) +
+      scale_y_continuous(breaks=seq(100, 500, 100), limits=c(100, 500)) +
+      xlab("Neighbourhood Groups") +
+      ylab("Prices") +
+      ggtitle("Price vs Neighbourhood Groups") +
+      geom_point(aes(x=1, y=y1), colour="green") +
+      geom_point(aes(x=2, y=y2), colour="green") +
+      geom_point(aes(x=3, y=y3), colour="green") + 
+      geom_point(aes(x=4, y=y4), colour="green") +
+      geom_point(aes(x=5, y=y5), colour="green") 
+  })
+  
+  output$table1 = renderTable({
+    
+    y1 <- 0.2*input$availability+0.2*input$min_nights+0.2*input$host_listing+100
+    y2 <- 0.2*input$availability+0.2*input$min_nights+0.2*input$host_listing+110
+    y3 <- 0.2*input$availability+0.2*input$min_nights+0.2*input$host_listing+120
+    y4 <- 0.2*input$availability+0.2*input$min_nights+0.2*input$host_listing+130
+    y5 <- 0.2*input$availability+0.2*input$min_nights+0.2*input$host_listing+140
+    
+    
+    #y= data.frame('Bronx'=y1, 'Brooklyn'=y2,'Manhattan'=y3,'Queens'=y4,'Staten Island'=y5)
+    y<-c('Expected Price',
+        paste0('Bronx: ',y1),
+        paste0('Brooklyn: ',y2),
+        paste0('Manhattan: ',y3),
+        paste0('Queens: ',y4),
+        paste0('Staten Island: ',y5))
+    
+    # y=as.data.frame(y)
+    # 
+    # colnames(y) = c("expected price")
+  })
+    
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+```
+
+# Conclusion
+
+Google map visualization shows that Airbnb listings are mostly concentrated in Manhattan and Brooklyn. Midtown and East Village are the most popular areas in Manhattan, and downtown Brooklyn is also emerging. The average price of listings in these area are also the most expansive. These areas are all very close to business districts with many merchandise, which explains the popularity. 
+
+The linear regression model with forward model selection and piecewise cubic spline concludes R-squared of 0.462 on test data. However, the assumptions for linear models are violated upon inspection, and alternative predictive models are further explored. 
+
+Random Forest and Gradient Boosting improved R-squared to 0.535 and 0.517, result in higher R-Squared than Linear Regression method. RF and GBM have similar performances. Both methods also suggest the same highest contributing variable (room type), matching with our intuition. The additional LIME toolkit offers further insight on how to explain the GBM prediction for each case.
+
+The shiny application implemented the results by allowing users to choose their desired airbnb listings and predict the price. It benefits users by having an informative and interactive app when deciding on their stay in New York City.
+
+New York City smart pricing project demonstrates the airbnb distributions across neighborhoods and gives price prediction based on the listing features. The prediction accuracy is limited by the number and content of listing features. Feature engineering can be further explored in future project to achieve higher prediction accuracy.
+
+
